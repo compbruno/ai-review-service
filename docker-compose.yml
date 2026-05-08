@@ -1,0 +1,72 @@
+services:
+  gerrit:
+    image: gerritcodereview/gerrit:3.10.0
+    container_name: gerrit
+    ports:
+      - "8081:8080"
+      - "29418:29418"
+    environment:
+      - CANONICAL_WEB_URL=http://localhost:8081
+    volumes:
+      - gerrit_data:/var/gerrit/review_site
+    networks:
+      - review-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    volumes:
+      - jenkins_data:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - review-net
+    depends_on:
+      gerrit:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - review-net
+
+  ai-review:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-review
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - GERRIT_URL=http://gerrit:8080
+      - OLLAMA_URL=http://ollama:11434
+    networks:
+      - review-net
+    depends_on:
+      gerrit:
+        condition: service_healthy
+
+volumes:
+  gerrit_data:
+  jenkins_data:
+  ollama_data:
+
+networks:
+  review-net:
+    driver: bridge
