@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 
-// Suporta dois providers: "gemini" (padrão) ou "ollama" (local)
+// Suporta dois providers: "gemini" (padrao) ou "ollama" (local)
 const PROVIDER = process.env.AI_PROVIDER ?? "gemini";
 
 const client = new OpenAI(
@@ -19,22 +19,27 @@ const MODEL =
   process.env.AI_MODEL ??
   (PROVIDER === "ollama" ? "codellama:13b" : "gemini-2.5-flash");
 
-const SYSTEM_PROMPT = `You are an expert code reviewer. Analyze the provided git diff and return a JSON array of review comments.
+const SYSTEM_PROMPT = `You are an expert code reviewer. Analyze ONLY the provided git diff and return a JSON array of review comments.
 
 Each comment must follow this exact structure:
 {
   "path": "relative/path/to/file.js",
   "line": 42,
   "side": "REVISION",
-  "message": "Your review comment here"
+  "message": "Specific review comment here"
 }
 
 Rules:
-- Only comment on lines that have real issues (bugs, security, performance, style, best practices)
-- Do NOT praise good code, only flag problems
-- Be concise and actionable — say what's wrong AND how to fix it
-- Return ONLY the raw JSON array, no markdown, no explanation
-- If there are no issues, return an empty array: []`;
+- Comment only on real defects that are directly evidenced by the diff.
+- Only comment on added or changed lines from the REVISION side of the diff.
+- Do not guess about code that is not visible in the diff.
+- Do not invent generic security findings. For example, mention SQL injection only when the diff clearly builds SQL queries from untrusted input.
+- Do not repeat the same message across unrelated lines.
+- Do not make style-only comments unless the style issue can cause a bug or maintenance risk.
+- Be concise and actionable: say what is wrong and how to fix it.
+- If you are not sure a finding is real, do not comment.
+- Return ONLY the raw JSON array, no markdown, no explanation.
+- If there are no clear issues, return an empty array: []`;
 
 export interface ReviewComment {
   path: string;
@@ -47,6 +52,101 @@ interface ReviewParams {
   diff: string;
   project?: string;
   branch?: string;
+}
+
+function parseChangedRevisionLines(diff: string): Map<string, Set<number>> {
+  const changedLines = new Map<string, Set<number>>();
+  let currentPath: string | null = null;
+  let revisionLine = 0;
+
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ b/")) {
+      currentPath = line.slice("+++ b/".length);
+      if (!changedLines.has(currentPath)) changedLines.set(currentPath, new Set());
+      continue;
+    }
+
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunkMatch) {
+      revisionLine = Number(hunkMatch[1]);
+      continue;
+    }
+
+    if (!currentPath || !revisionLine) continue;
+
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      changedLines.get(currentPath)?.add(revisionLine);
+      revisionLine += 1;
+      continue;
+    }
+
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      continue;
+    }
+
+    revisionLine += 1;
+  }
+
+  return changedLines;
+}
+
+function parseAiResponse(raw: string): unknown[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+
+    try {
+      const parsed = JSON.parse(match[0]);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+function isReviewComment(value: unknown): value is ReviewComment {
+  if (!value || typeof value !== "object") return false;
+
+  const comment = value as Partial<ReviewComment>;
+
+  return (
+    typeof comment.path === "string" &&
+    comment.path.length > 0 &&
+    Number.isInteger(comment.line) &&
+    Number(comment.line) > 0 &&
+    (comment.side === "REVISION" || comment.side === "PARENT") &&
+    typeof comment.message === "string" &&
+    comment.message.trim().length > 0
+  );
+}
+
+function hasSqlContext(diff: string): boolean {
+  return /\b(sql|query|select|insert|update|delete|from|where|join|prisma|sequelize|typeorm|knex|execute|raw|database|db\.)\b/i.test(diff);
+}
+
+function normalizeComments(rawComments: unknown[], diff: string): ReviewComment[] {
+  const changedLines = parseChangedRevisionLines(diff);
+  const allowSqlComments = hasSqlContext(diff);
+  const seen = new Set<string>();
+
+  return rawComments
+    .filter(isReviewComment)
+    .filter((comment) => comment.side === "REVISION")
+    .filter((comment) => changedLines.get(comment.path)?.has(comment.line))
+    .filter((comment) => allowSqlComments || !/sql\s*injection/i.test(comment.message))
+    .map((comment) => ({
+      ...comment,
+      message: comment.message.trim(),
+    }))
+    .filter((comment) => {
+      const key = `${comment.path}:${comment.line}:${comment.message.toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 export async function reviewWithAI({
@@ -68,18 +168,11 @@ export async function reviewWithAI({
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
-    temperature: 0.2,
+    temperature: 0,
   });
 
   const raw = response.choices[0].message.content?.trim() ?? "";
+  const parsed = parseAiResponse(raw);
 
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("Expected array");
-    return parsed as ReviewComment[];
-  } catch {
-    const match = raw.match(/\[[\s\S]*\]/);
-    if (match) return JSON.parse(match[0]) as ReviewComment[];
-    return [];
-  }
+  return normalizeComments(parsed, diff);
 }
