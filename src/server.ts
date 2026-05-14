@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "./tracer.js";
 import Fastify from "fastify";
 import { reviewRoute } from "./routes/review.js";
 

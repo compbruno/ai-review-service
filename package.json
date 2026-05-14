@@ -8,8 +8,10 @@
     "start": "tsx src/server.ts"
   },
   "dependencies": {
+    "dd-trace": "^5.64.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.29.1",
+    "hot-shots": "^10.2.1",
     "openai": "^4.52.0"
   },
   "devDependencies": {
