@@ -20,12 +20,17 @@ O projeto expoe uma API HTTP que recebe um diff, envia o conteudo para um provid
 - Gerrit
 - Jenkins
 - Gemini API ou Ollama local
+- Datadog para observabilidade
 
 ## Setup
 
 Para configurar o ambiente local completo com Jenkins, Gerrit e AI Review, siga o guia:
 
 [Setup.md](Setup.md)
+
+Para entender e configurar observabilidade com Datadog, veja:
+
+[Observability.md](Observability.md)
 
 ## Servicos do Docker Compose
 
@@ -36,6 +41,7 @@ O ambiente local sobe os seguintes servicos:
 | `gerrit` | `8081`, `29418` | Code review e repositorio Git |
 | `jenkins` | `8080`, `50000` | Pipeline acionado por eventos do Gerrit |
 | `ollama` | `11434` | Provider local de IA |
+| `datadog` | `8125`, `8126` | Agent para metricas, logs e traces |
 | `ai-review` | `3000` | API do servico de revisao |
 
 ## Configuracao
@@ -58,6 +64,9 @@ Principais variaveis:
 | `GERRIT_USER` | Usuario usado para publicar comentarios no Gerrit. |
 | `GERRIT_PASSWORD` | HTTP password do usuario do Gerrit. |
 | `PORT` | Porta HTTP do servico. Padrao: `3000`. |
+| `DD_API_KEY` | API key usada pelo Datadog Agent. |
+| `DD_SITE` | Site Datadog da conta, como `datadoghq.com` ou `datadoghq.eu`. |
+| `DD_ENV` | Ambiente usado nas tags de observabilidade. |
 
 ## API
 
@@ -169,6 +178,9 @@ docker-compose down -v
 ```text
 src/
   server.ts
+  tracer.ts
+  observability/
+    metrics.ts
   routes/
     review.ts
   services/
